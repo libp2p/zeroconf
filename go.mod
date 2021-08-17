@@ -1,6 +1,6 @@
 module github.com/libp2p/zeroconf/v2
 
-go 1.15
+go 1.16
 
 require (
 	github.com/cenkalti/backoff/v4 v4.1.1
