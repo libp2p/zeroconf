@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -309,7 +310,14 @@ func (s *Server) recv6(c *ipv6.PacketConn) {
 }
 
 // parsePacket is used to parse an incoming packet
-func (s *Server) parsePacket(packet []byte, ifIndex int, from net.Addr) error {
+func (s *Server) parsePacket(packet []byte, ifIndex int, from net.Addr) (err error) {
+	defer func() {
+		if rerr := recover(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "caught panic: %s\n%s\n", rerr, debug.Stack())
+			err = fmt.Errorf("panic in mDNS packet handling: %s", rerr)
+		}
+	}()
+
 	var msg dns.Msg
 	if err := msg.Unpack(packet); err != nil {
 		// log.Printf("[ERR] zeroconf: Failed to unpack packet: %v", err)
@@ -548,8 +556,14 @@ func (s *Server) serviceTypeName(resp *dns.Msg, ttl uint32) {
 }
 
 // Perform probing & announcement
-//TODO: implement a proper probing & conflict resolution
+// TODO: implement a proper probing & conflict resolution
 func (s *Server) probe() {
+	defer func() {
+		if rerr := recover(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "caught panic: %s\n%s\n", rerr, debug.Stack())
+		}
+	}()
+
 	defer s.refCount.Done()
 
 	q := new(dns.Msg)
