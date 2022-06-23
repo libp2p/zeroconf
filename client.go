@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -108,7 +110,7 @@ func applyOpts(options ...ClientOption) clientOpts {
 	return conf
 }
 
-func (c *client) run(ctx context.Context, params *lookupParams) error {
+func (c *client) run(ctx context.Context, params *lookupParams) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -118,7 +120,7 @@ func (c *client) run(ctx context.Context, params *lookupParams) error {
 
 	// If previous probe was ok, it should be fine now. In case of an error later on,
 	// the entries' queue is closed.
-	err := c.periodicQuery(ctx, params)
+	err = c.periodicQuery(ctx, params)
 	cancel()
 	<-done
 	return err
@@ -165,6 +167,12 @@ var cleanupFreq = 10 * time.Second
 
 // Start listeners and waits for the shutdown signal from exit channel
 func (c *client) mainloop(ctx context.Context, params *lookupParams) {
+	defer func() {
+		if rerr := recover(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "caught panic: %s\n%s\n", rerr, debug.Stack())
+		}
+	}()
+
 	// start listening for responses
 	msgCh := make(chan *dns.Msg, 32)
 	if c.ipv4conn != nil {
@@ -313,6 +321,12 @@ func (c *client) shutdown() {
 // Data receiving routine reads from connection, unpacks packets into dns.Msg
 // structures and sends them to a given msgCh channel
 func (c *client) recv(ctx context.Context, l interface{}, msgCh chan *dns.Msg) {
+	defer func() {
+		if rerr := recover(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "caught panic: %s\n%s\n", rerr, debug.Stack())
+		}
+	}()
+
 	var readFrom func([]byte) (n int, src net.Addr, err error)
 
 	switch pConn := l.(type) {
@@ -408,7 +422,14 @@ func (c *client) periodicQuery(ctx context.Context, params *lookupParams) error 
 
 // Performs the actual query by service name (browse) or service instance name (lookup),
 // start response listeners goroutines and loops over the entries channel.
-func (c *client) query(params *lookupParams) error {
+func (c *client) query(params *lookupParams) (err error) {
+	defer func() {
+		if rerr := recover(); rerr != nil {
+			fmt.Fprintf(os.Stderr, "caught panic: %s\n%s\n", rerr, debug.Stack())
+			err = fmt.Errorf("panic in zeroconf query: %s", rerr)
+		}
+	}()
+
 	var serviceName, serviceInstanceName string
 	serviceName = fmt.Sprintf("%s.%s.", trimDot(params.Service), trimDot(params.Domain))
 
