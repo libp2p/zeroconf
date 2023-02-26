@@ -28,18 +28,23 @@ const (
 	IPv4AndIPv6        = IPv4 | IPv6 // default option
 )
 
-var initialQueryInterval = 4 * time.Second
+var (
+	initialQueryInterval      = 4 * time.Second
+	defaultClientWriteTimeout = 10 * time.Second
+)
 
 // Client structure encapsulates both IPv4/IPv6 UDP connections.
 type client struct {
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	ipv4conn     *ipv4.PacketConn
+	ipv6conn     *ipv6.PacketConn
+	ifaces       []net.Interface
+	writeTimeout time.Duration
 }
 
 type clientOpts struct {
-	listenOn IPType
-	ifaces   []net.Interface
+	listenOn     IPType
+	ifaces       []net.Interface
+	writeTimeout time.Duration
 }
 
 // ClientOption fills the option struct to configure intefaces, etc.
@@ -60,6 +65,13 @@ func SelectIPTraffic(t IPType) ClientOption {
 func SelectIfaces(ifaces []net.Interface) ClientOption {
 	return func(o *clientOpts) {
 		o.ifaces = ifaces
+	}
+}
+
+// ClientWriteTimeout sets timeout for writing to the socket
+func ClientWriteTimeout(duration time.Duration) ClientOption {
+	return func(o *clientOpts) {
+		o.writeTimeout = duration
 	}
 }
 
@@ -100,7 +112,8 @@ func Lookup(ctx context.Context, instance, service, domain string, entries chan<
 func applyOpts(options ...ClientOption) clientOpts {
 	// Apply default configuration and load supplied options.
 	var conf = clientOpts{
-		listenOn: IPv4AndIPv6,
+		listenOn:     IPv4AndIPv6,
+		writeTimeout: defaultClientWriteTimeout,
 	}
 	for _, o := range options {
 		if o != nil {
@@ -137,11 +150,12 @@ func newClient(opts clientOpts) (*client, error) {
 	if len(ifaces) == 0 {
 		ifaces = listMulticastInterfaces()
 	}
+	ifaceList := NewInterfaceList(ifaces)
 	// IPv4 interfaces
 	var ipv4conn *ipv4.PacketConn
 	if (opts.listenOn & IPv4) > 0 {
 		var err error
-		ipv4conn, err = joinUdp4Multicast(ifaces)
+		ipv4conn, err = joinUdp4Multicast(ifaceList)
 		if err != nil {
 			return nil, err
 		}
@@ -150,16 +164,17 @@ func newClient(opts clientOpts) (*client, error) {
 	var ipv6conn *ipv6.PacketConn
 	if (opts.listenOn & IPv6) > 0 {
 		var err error
-		ipv6conn, err = joinUdp6Multicast(ifaces)
+		ipv6conn, err = joinUdp6Multicast(ifaceList)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	return &client{
-		ipv4conn: ipv4conn,
-		ipv6conn: ipv6conn,
-		ifaces:   ifaces,
+		ipv4conn:     ipv4conn,
+		ipv6conn:     ipv6conn,
+		ifaces:       ifaces,
+		writeTimeout: opts.writeTimeout,
 	}, nil
 }
 
@@ -451,6 +466,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
+			setDeadline(c.writeTimeout, c.ipv4conn)
 			c.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
 		}
 	}
@@ -468,6 +484,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
+			setDeadline(c.writeTimeout, c.ipv6conn)
 			c.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
 		}
 	}

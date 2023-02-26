@@ -35,7 +35,11 @@ var (
 	}
 )
 
-func joinUdp6Multicast(interfaces []net.Interface) (*ipv6.PacketConn, error) {
+func joinUdp6Multicast(interfaces []*NetInterface) (*ipv6.PacketConn, error) {
+	if len(interfaces) == 0 {
+		return nil, fmt.Errorf("no interfaces to join multicast on")
+	}
+
 	udpConn, err := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)
 	if err != nil {
 		return nil, err
@@ -45,19 +49,15 @@ func joinUdp6Multicast(interfaces []net.Interface) (*ipv6.PacketConn, error) {
 	pkConn := ipv6.NewPacketConn(udpConn)
 	pkConn.SetControlMessage(ipv6.FlagInterface, true)
 
-	if len(interfaces) == 0 {
-		interfaces = listMulticastInterfaces()
-	}
 	// log.Println("Using multicast interfaces: ", interfaces)
-
-	var failedJoins int
+	var anySucceeded bool
 	for _, iface := range interfaces {
-		if err := pkConn.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv6}); err != nil {
-			// log.Println("Udp6 JoinGroup failed for iface ", iface)
-			failedJoins++
+		if err := pkConn.JoinGroup(&iface.Interface, &net.UDPAddr{IP: mdnsGroupIPv6}); err == nil {
+			iface.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagJoined)
+			anySucceeded = true
 		}
 	}
-	if failedJoins == len(interfaces) {
+	if !anySucceeded {
 		pkConn.Close()
 		return nil, fmt.Errorf("udp6: failed to join any of these interfaces: %v", interfaces)
 	}
@@ -67,7 +67,11 @@ func joinUdp6Multicast(interfaces []net.Interface) (*ipv6.PacketConn, error) {
 	return pkConn, nil
 }
 
-func joinUdp4Multicast(interfaces []net.Interface) (*ipv4.PacketConn, error) {
+func joinUdp4Multicast(interfaces []*NetInterface) (*ipv4.PacketConn, error) {
+	if len(interfaces) == 0 {
+		return nil, fmt.Errorf("no interfaces to join multicast on")
+	}
+
 	udpConn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
 		// log.Printf("[ERR] bonjour: Failed to bind to udp4 mutlicast: %v", err)
@@ -78,19 +82,16 @@ func joinUdp4Multicast(interfaces []net.Interface) (*ipv4.PacketConn, error) {
 	pkConn := ipv4.NewPacketConn(udpConn)
 	pkConn.SetControlMessage(ipv4.FlagInterface, true)
 
-	if len(interfaces) == 0 {
-		interfaces = listMulticastInterfaces()
-	}
 	// log.Println("Using multicast interfaces: ", interfaces)
+	var anySucceed bool
 
-	var failedJoins int
 	for _, iface := range interfaces {
-		if err := pkConn.JoinGroup(&iface, &net.UDPAddr{IP: mdnsGroupIPv4}); err != nil {
-			// log.Println("Udp4 JoinGroup failed for iface ", iface)
-			failedJoins++
+		if err := pkConn.JoinGroup(&iface.Interface, &net.UDPAddr{IP: mdnsGroupIPv4}); err == nil {
+			anySucceed = true
+			iface.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagJoined)
 		}
 	}
-	if failedJoins == len(interfaces) {
+	if !anySucceed {
 		pkConn.Close()
 		return nil, fmt.Errorf("udp4: failed to join any of these interfaces: %v", interfaces)
 	}
