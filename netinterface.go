@@ -22,8 +22,8 @@ type NetInterfaceList []*NetInterface
 type NetInterfaceStateFlag uint8
 
 const (
-	NetInterfaceStateFlagJoined NetInterfaceStateFlag = 1 << iota
-	NetInterfaceStateFlagRegistered
+	NetInterfaceStateFlagMulticastJoined NetInterfaceStateFlag = 1 << iota // we have joined the multicast group on this interface
+	NetInterfaceStateFlagMessageSent                                       // we have successfully sent at least one message on this interface
 )
 
 func (i *NetInterface) HasFlags(scope NetInterfaceScope, flags ...NetInterfaceStateFlag) bool {

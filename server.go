@@ -28,12 +28,14 @@ var (
 
 type serverOpts struct {
 	ttl          uint32
+	listenOn     IPType
 	writeTimeout time.Duration
 }
 
 func applyServerOpts(options ...ServerOption) serverOpts {
 	// Apply default configuration and load supplied options.
 	var conf = serverOpts{
+		listenOn:     IPv4AndIPv6,
 		ttl:          defaultTTL,
 		writeTimeout: defaultServerWriteTimeout,
 	}
@@ -59,6 +61,14 @@ func TTL(ttl uint32) ServerOption {
 func WriteTimeout(duration time.Duration) ServerOption {
 	return func(o *serverOpts) {
 		o.writeTimeout = duration
+	}
+}
+
+// ServerSelectIPTraffic selects the type of IP packets (IPv4, IPv6, or both) this
+// instance listens for.
+func ServerSelectIPTraffic(t IPType) ServerOption {
+	return func(o *serverOpts) {
+		o.listenOn = t
 	}
 }
 
@@ -96,16 +106,6 @@ func Register(instance, service, domain string, port int, text []string, ifaces 
 
 	if len(ifaces) == 0 {
 		ifaces = listMulticastInterfaces()
-	}
-
-	for _, iface := range ifaces {
-		v4, v6 := addrsForInterface(&iface)
-		entry.AddrIPv4 = append(entry.AddrIPv4, v4...)
-		entry.AddrIPv6 = append(entry.AddrIPv6, v6...)
-	}
-
-	if entry.AddrIPv4 == nil && entry.AddrIPv6 == nil {
-		return nil, fmt.Errorf("could not determine host IP addresses")
 	}
 
 	s, err := newServer(ifaces, applyServerOpts(opts...))
@@ -202,30 +202,33 @@ func newServer(ifaces []net.Interface, opts serverOpts) (*Server, error) {
 	}
 
 	ifaceList := NewInterfaceList(ifaces)
-	ipv4conn, err4 := joinUdp4Multicast(ifaceList)
-	if err4 != nil {
-		log.Printf("[zeroconf] no suitable IPv4 interface: %s", err4.Error())
-	}
-
-	ipv6conn, err6 := joinUdp6Multicast(ifaceList)
-	if err6 != nil {
-		log.Printf("[zeroconf] no suitable IPv6 interface: %s", err6.Error())
-	}
-
-	if err4 != nil && err6 != nil {
-		// No supported interface left.
-		return nil, fmt.Errorf("no supported interface")
-	}
 
 	s := &Server{
-		ipv4conn:       ipv4conn,
-		ipv6conn:       ipv6conn,
 		interfaces:     ifaceList,
 		ttl:            opts.ttl,
 		writeTimeout:   opts.writeTimeout,
 		shouldShutdown: make(chan struct{}),
 	}
 
+	var err error
+	if (opts.listenOn & IPv4) > 0 {
+		s.ipv4conn, err = joinUdp4Multicast(ifaceList)
+		if err != nil {
+			log.Printf("[zeroconf] no suitable IPv4 interface: %s", err.Error())
+		}
+	}
+
+	if (opts.listenOn & IPv6) > 0 {
+		s.ipv6conn, err = joinUdp6Multicast(ifaceList)
+		if err != nil {
+			log.Printf("[zeroconf] no suitable IPv6 interface: %s", err.Error())
+		}
+
+	}
+
+	if s.ipv6conn == nil && s.ipv4conn == nil {
+		return nil, fmt.Errorf("no supported interface")
+	}
 	return s, nil
 }
 
@@ -612,7 +615,7 @@ func (s *Server) probe() {
 		return
 	}
 	for i := 0; i < 3; i++ {
-		if err := s.multicastResponse(q, 0, NetInterfaceStateFlagJoined); err != nil {
+		if err := s.multicastResponse(q, 0, NetInterfaceStateFlagMulticastJoined); err != nil {
 			log.Println("[ERR] zeroconf: failed to send probe:", err.Error())
 		}
 		timer.Reset(250 * time.Millisecond)
@@ -639,7 +642,7 @@ func (s *Server) probe() {
 			resp.Answer = []dns.RR{}
 			resp.Extra = []dns.RR{}
 			s.composeLookupAnswers(resp, s.ttl, intf.Index, true)
-			if err := s.multicastResponse(resp, intf.Index, NetInterfaceStateFlagJoined); err != nil {
+			if err := s.multicastResponse(resp, intf.Index, NetInterfaceStateFlagMulticastJoined); err != nil {
 				log.Println("[ERR] zeroconf: failed to send announcement:", err.Error())
 			}
 		}
@@ -680,7 +683,7 @@ func (s *Server) unregister() error {
 	s.composeLookupAnswers(resp, 0, 0, true)
 	// cleanup ifaces we have NEVER written successfully. No need to unregister them
 
-	return s.multicastResponse(resp, 0, NetInterfaceStateFlagJoined, NetInterfaceStateFlagRegistered)
+	return s.multicastResponse(resp, 0, NetInterfaceStateFlagMulticastJoined, NetInterfaceStateFlagMessageSent)
 }
 
 func (s *Server) appendAddrs(list []dns.RR, ttl uint32, ifIndex int, flushCache bool) []dns.RR {
@@ -761,7 +764,7 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 		return err
 	}
 	addr := from.(*net.UDPAddr)
-	if addr.IP.To4() != nil {
+	if addr.IP.To4() != nil && s.ipv4conn != nil {
 		if ifIndex != 0 {
 			var wcm ipv4.ControlMessage
 			wcm.IfIndex = ifIndex
@@ -771,7 +774,7 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 			_, err = s.ipv4conn.WriteTo(buf, nil, addr)
 		}
 		return err
-	} else {
+	} else if s.ipv6conn != nil {
 		if ifIndex != 0 {
 			var wcm ipv6.ControlMessage
 			wcm.IfIndex = ifIndex
@@ -781,6 +784,8 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 			_, err = s.ipv6conn.WriteTo(buf, nil, addr)
 		}
 		return err
+	} else {
+		return fmt.Errorf("no suitable interface")
 	}
 }
 
@@ -809,7 +814,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 				setDeadline(s.writeTimeout, s.ipv4conn)
 				n, err := s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
 				if err == nil && n > 0 {
-					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagRegistered)
+					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
 				}
 			}
 
@@ -829,7 +834,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 				setDeadline(s.writeTimeout, s.ipv4conn)
 				n, err := s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
 				if err == nil && n > 0 {
-					intf.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagRegistered)
+					intf.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
 				}
 				//s.ifaceOk[intf.Index] = s.ifaceOk[intf.Index] || n > 0
 			}
@@ -855,7 +860,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 				setDeadline(s.writeTimeout, s.ipv6conn)
 				n, err := s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
 				if err == nil && n > 0 {
-					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagRegistered)
+					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMessageSent)
 				}
 			}
 		} else {
@@ -874,7 +879,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 				setDeadline(s.writeTimeout, s.ipv6conn)
 				n, err := s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
 				if err == nil && n > 0 {
-					intf.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagRegistered)
+					intf.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMessageSent)
 				}
 			}
 		}

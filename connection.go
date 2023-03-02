@@ -53,7 +53,7 @@ func joinUdp6Multicast(interfaces []*NetInterface) (*ipv6.PacketConn, error) {
 	var anySucceeded bool
 	for _, iface := range interfaces {
 		if err := pkConn.JoinGroup(&iface.Interface, &net.UDPAddr{IP: mdnsGroupIPv6}); err == nil {
-			iface.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagJoined)
+			iface.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMulticastJoined)
 			anySucceeded = true
 		}
 	}
@@ -88,7 +88,7 @@ func joinUdp4Multicast(interfaces []*NetInterface) (*ipv4.PacketConn, error) {
 	for _, iface := range interfaces {
 		if err := pkConn.JoinGroup(&iface.Interface, &net.UDPAddr{IP: mdnsGroupIPv4}); err == nil {
 			anySucceed = true
-			iface.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagJoined)
+			iface.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMulticastJoined)
 		}
 	}
 	if !anySucceed {
