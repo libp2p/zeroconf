@@ -771,6 +771,7 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 			setDeadline(s.writeTimeout, s.ipv4conn)
 			_, err = s.ipv4conn.WriteTo(buf, &wcm, addr)
 		} else {
+			setDeadline(s.writeTimeout, s.ipv4conn)
 			_, err = s.ipv4conn.WriteTo(buf, nil, addr)
 		}
 		return err
@@ -778,9 +779,10 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 		if ifIndex != 0 {
 			var wcm ipv6.ControlMessage
 			wcm.IfIndex = ifIndex
-			setDeadline(s.writeTimeout, s.ipv4conn)
+			setDeadline(s.writeTimeout, s.ipv6conn)
 			_, err = s.ipv6conn.WriteTo(buf, &wcm, addr)
 		} else {
+			setDeadline(s.writeTimeout, s.ipv6conn)
 			_, err = s.ipv6conn.WriteTo(buf, nil, addr)
 		}
 		return err
@@ -790,7 +792,7 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 }
 
 // multicastResponse is used to send a multicast response packet
-func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterfaceStateFlag) error {
+func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, requiredFlags ...NetInterfaceStateFlag) error {
 	buf, err := msg.Pack()
 	if err != nil {
 		return fmt.Errorf("failed to pack msg %v: %w", msg, err)
@@ -801,7 +803,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv4.ControlMessage
 		if ifIndex != 0 {
-			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv4, flags...) {
+			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv4, requiredFlags...) {
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = ifIndex
@@ -820,7 +822,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 
 		} else {
 			for _, intf := range s.interfaces {
-				if !intf.HasFlags(NetInterfaceScopeIPv4, flags...) {
+				if !intf.HasFlags(NetInterfaceScopeIPv4, requiredFlags...) {
 					continue
 				}
 				switch runtime.GOOS {
@@ -836,7 +838,6 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 				if err == nil && n > 0 {
 					intf.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
 				}
-				//s.ifaceOk[intf.Index] = s.ifaceOk[intf.Index] || n > 0
 			}
 		}
 	}
@@ -847,7 +848,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv6.ControlMessage
 		if ifIndex != 0 {
-			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv6, flags...) {
+			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv6, requiredFlags...) {
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = ifIndex
@@ -865,7 +866,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, flags ...NetInterf
 			}
 		} else {
 			for _, intf := range s.interfaces {
-				if !intf.HasFlags(NetInterfaceScopeIPv6, flags...) {
+				if !intf.HasFlags(NetInterfaceScopeIPv6, requiredFlags...) {
 					continue
 				}
 				switch runtime.GOOS {
