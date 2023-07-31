@@ -32,14 +32,16 @@ var initialQueryInterval = 4 * time.Second
 
 // Client structure encapsulates both IPv4/IPv6 UDP connections.
 type client struct {
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	ipv4conn        *ipv4.PacketConn
+	ipv6conn        *ipv6.PacketConn
+	ifaces          []net.Interface
+	unannouncements bool
 }
 
 type clientOpts struct {
-	listenOn IPType
-	ifaces   []net.Interface
+	listenOn        IPType
+	ifaces          []net.Interface
+	unannouncements bool
 }
 
 // ClientOption fills the option struct to configure intefaces, etc.
@@ -60,6 +62,14 @@ func SelectIPTraffic(t IPType) ClientOption {
 func SelectIfaces(ifaces []net.Interface) ClientOption {
 	return func(o *clientOpts) {
 		o.ifaces = ifaces
+	}
+}
+
+// Emit an entry with an expiry in the past if a previously emitted entry is unannounced.
+// This is never guaranteed to occur, but can speed up detection of disconnected clients.
+func Unannouncements() ClientOption {
+	return func(o *clientOpts) {
+		o.unannouncements = true
 	}
 }
 
@@ -157,9 +167,10 @@ func newClient(opts clientOpts) (*client, error) {
 	}
 
 	return &client{
-		ipv4conn: ipv4conn,
-		ipv6conn: ipv6conn,
-		ifaces:   ifaces,
+		ipv4conn:        ipv4conn,
+		ipv6conn:        ipv6conn,
+		ifaces:          ifaces,
+		unannouncements: opts.unannouncements,
 	}, nil
 }
 
@@ -272,6 +283,9 @@ func (c *client) mainloop(ctx context.Context, params *lookupParams) {
 		for k, e := range entries {
 			if !e.Expiry.After(now) {
 				// Implies TTL=0, meaning a "Goodbye Packet".
+				if _, ok := sentEntries[k]; ok && c.unannouncements {
+					params.Entries <- e
+				}
 				delete(sentEntries, k)
 				continue
 			}
