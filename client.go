@@ -177,12 +177,12 @@ func (c *client) mainloop(ctx context.Context, params *lookupParams) {
 	}
 
 	// Iterate through channels from listeners goroutines
-	var entries map[string]*ServiceEntry
 	sentEntries := make(map[string]*ServiceEntry)
 
 	ticker := time.NewTicker(cleanupFreq)
 	defer ticker.Stop()
 	for {
+		var entries map[string]*ServiceEntry
 		var now time.Time
 		select {
 		case <-ctx.Done():
@@ -269,34 +269,33 @@ func (c *client) mainloop(ctx context.Context, params *lookupParams) {
 			}
 		}
 
-		if len(entries) > 0 {
-			for k, e := range entries {
-				if !e.Expiry.After(now) {
-					delete(entries, k)
-					delete(sentEntries, k)
-					continue
-				}
-				if _, ok := sentEntries[k]; ok {
-					continue
-				}
+		for k, e := range entries {
+			if !e.Expiry.After(now) {
+				// Implies TTL=0, meaning a "Goodbye Packet".
+				delete(sentEntries, k)
+				continue
+			}
+			if _, ok := sentEntries[k]; ok {
+				// Already sent, suppress duplicates
+				continue
+			}
 
-				// If this is an DNS-SD query do not throw PTR away.
-				// It is expected to have only PTR for enumeration
-				if params.ServiceRecord.ServiceTypeName() != params.ServiceRecord.ServiceName() {
-					// Require at least one resolved IP address for ServiceEntry
-					// TODO: wait some more time as chances are high both will arrive.
-					if len(e.AddrIPv4) == 0 && len(e.AddrIPv6) == 0 {
-						continue
-					}
+			// If this is an DNS-SD query do not throw PTR away.
+			// It is expected to have only PTR for enumeration
+			if params.ServiceRecord.ServiceTypeName() != params.ServiceRecord.ServiceName() {
+				// Require at least one resolved IP address for ServiceEntry
+				// TODO: wait some more time as chances are high both will arrive.
+				if len(e.AddrIPv4) == 0 && len(e.AddrIPv6) == 0 {
+					continue
 				}
-				// Submit entry to subscriber and cache it.
-				// This is also a point to possibly stop probing actively for a
-				// service entry.
-				params.Entries <- e
-				sentEntries[k] = e
-				if !params.isBrowsing {
-					params.disableProbing()
-				}
+			}
+			// Submit entry to subscriber and cache it.
+			// This is also a point to possibly stop probing actively for a
+			// service entry.
+			params.Entries <- e
+			sentEntries[k] = e
+			if !params.isBrowsing {
+				params.disableProbing()
 			}
 		}
 	}
