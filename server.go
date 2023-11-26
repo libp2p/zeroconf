@@ -66,9 +66,6 @@ func Register(instance, service, domain string, port int, text []string, ifaces 
 	if entry.Domain == "" {
 		entry.Domain = "local."
 	}
-	if entry.Port == 0 {
-		return nil, fmt.Errorf("missing port")
-	}
 
 	var err error
 	if entry.HostName == "" {
@@ -126,9 +123,6 @@ func RegisterProxy(instance, service, domain string, port int, host string, ips 
 	}
 	if entry.Domain == "" {
 		entry.Domain = "local"
-	}
-	if entry.Port == 0 {
-		return nil, fmt.Errorf("missing port")
 	}
 
 	if !strings.HasSuffix(trimDot(entry.HostName), entry.Domain) {
