@@ -110,6 +110,9 @@ type ServiceEntry struct {
 	Expiry   time.Time `json:"expiry"`   // Expiry of the service entry, will be converted to a TTL value
 	AddrIPv4 []net.IP  `json:"-"`        // Host machine IPv4 address
 	AddrIPv6 []net.IP  `json:"-"`        // Host machine IPv6 address
+
+	ReceivedIfIndex int
+	ReceivedSrc     net.Addr
 }
 
 // newServiceEntry constructs a ServiceEntry.
