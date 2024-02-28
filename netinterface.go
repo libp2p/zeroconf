@@ -61,7 +61,11 @@ func (i *NetInterface) setFlag(address *NetInterfaceStateFlag, flag NetInterface
 	// If atomic value != previously loaded value, then repeat the operation
 	// If they are equal, then we can safely set the new value
 	// This is the way to ensure atomicity of the operation
-	for !atomic.CompareAndSwapUint32((*uint32)(address), uint32(i.loadFlag(address)), uint32(i.loadFlag(address)|flag)) {
+	for {
+		loadedValue := uint32(i.loadFlag(address))
+		if atomic.CompareAndSwapUint32((*uint32)(address), loadedValue, loadedValue|uint32(flag)) {
+			break
+		}
 	}
 }
 
