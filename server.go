@@ -21,16 +21,23 @@ const (
 	multicastRepetitions = 2
 )
 
-var defaultTTL uint32 = 3200
+var (
+	defaultTTL                uint32 = 3200
+	defaultServerWriteTimeout        = 10 * time.Second
+)
 
 type serverOpts struct {
-	ttl uint32
+	ttl          uint32
+	listenOn     IPType
+	writeTimeout time.Duration
 }
 
 func applyServerOpts(options ...ServerOption) serverOpts {
 	// Apply default configuration and load supplied options.
 	var conf = serverOpts{
-		ttl: defaultTTL,
+		listenOn:     IPv4AndIPv6,
+		ttl:          defaultTTL,
+		writeTimeout: defaultServerWriteTimeout,
 	}
 	for _, o := range options {
 		if o != nil {
@@ -47,6 +54,21 @@ type ServerOption func(*serverOpts)
 func TTL(ttl uint32) ServerOption {
 	return func(o *serverOpts) {
 		o.ttl = ttl
+	}
+}
+
+// WriteTimeout sets timeout for writing to the socket
+func WriteTimeout(duration time.Duration) ServerOption {
+	return func(o *serverOpts) {
+		o.writeTimeout = duration
+	}
+}
+
+// ServerSelectIPTraffic selects the type of IP packets (IPv4, IPv6, or both) this
+// instance listens for.
+func ServerSelectIPTraffic(t IPType) ServerOption {
+	return func(o *serverOpts) {
+		o.listenOn = t
 	}
 }
 
@@ -84,16 +106,6 @@ func Register(instance, service, domain string, port int, text []string, ifaces 
 
 	if len(ifaces) == 0 {
 		ifaces = listMulticastInterfaces()
-	}
-
-	for _, iface := range ifaces {
-		v4, v6 := addrsForInterface(&iface)
-		entry.AddrIPv4 = append(entry.AddrIPv4, v4...)
-		entry.AddrIPv6 = append(entry.AddrIPv6, v6...)
-	}
-
-	if entry.AddrIPv4 == nil && entry.AddrIPv6 == nil {
-		return nil, fmt.Errorf("could not determine host IP addresses")
 	}
 
 	s, err := newServer(ifaces, applyServerOpts(opts...))
@@ -169,41 +181,54 @@ const (
 
 // Server structure encapsulates both IPv4/IPv6 UDP connections
 type Server struct {
-	service  *ServiceEntry
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	service    *ServiceEntry
+	ipv4conn   *ipv4.PacketConn
+	ipv6conn   *ipv6.PacketConn
+	interfaces NetInterfaceList
 
+	// store if any write to iface was successful
 	shouldShutdown chan struct{}
 	shutdownLock   sync.Mutex
 	refCount       sync.WaitGroup
 	isShutdown     bool
 	ttl            uint32
+	writeTimeout   time.Duration
 }
 
 // Constructs server structure
 func newServer(ifaces []net.Interface, opts serverOpts) (*Server, error) {
-	ipv4conn, err4 := joinUdp4Multicast(ifaces)
-	if err4 != nil {
-		log.Printf("[zeroconf] no suitable IPv4 interface: %s", err4.Error())
-	}
-	ipv6conn, err6 := joinUdp6Multicast(ifaces)
-	if err6 != nil {
-		log.Printf("[zeroconf] no suitable IPv6 interface: %s", err6.Error())
-	}
-	if err4 != nil && err6 != nil {
-		// No supported interface left.
-		return nil, fmt.Errorf("no supported interface")
+	if len(ifaces) == 0 {
+		ifaces = listMulticastInterfaces()
 	}
 
+	ifaceList := NewInterfaceList(ifaces)
+
 	s := &Server{
-		ipv4conn:       ipv4conn,
-		ipv6conn:       ipv6conn,
-		ifaces:         ifaces,
+		interfaces:     ifaceList,
 		ttl:            opts.ttl,
+		writeTimeout:   opts.writeTimeout,
 		shouldShutdown: make(chan struct{}),
 	}
 
+	var err error
+	if (opts.listenOn & IPv4) > 0 {
+		s.ipv4conn, err = joinUdp4Multicast(ifaceList)
+		if err != nil {
+			log.Printf("[zeroconf] no suitable IPv4 interface: %s", err.Error())
+		}
+	}
+
+	if (opts.listenOn & IPv6) > 0 {
+		s.ipv6conn, err = joinUdp6Multicast(ifaceList)
+		if err != nil {
+			log.Printf("[zeroconf] no suitable IPv6 interface: %s", err.Error())
+		}
+
+	}
+
+	if s.ipv6conn == nil && s.ipv4conn == nil {
+		return nil, fmt.Errorf("no supported interface")
+	}
 	return s, nil
 }
 
@@ -590,7 +615,7 @@ func (s *Server) probe() {
 		return
 	}
 	for i := 0; i < 3; i++ {
-		if err := s.multicastResponse(q, 0); err != nil {
+		if err := s.multicastResponse(q, 0, NetInterfaceStateFlagMulticastJoined); err != nil {
 			log.Println("[ERR] zeroconf: failed to send probe:", err.Error())
 		}
 		timer.Reset(250 * time.Millisecond)
@@ -609,7 +634,7 @@ func (s *Server) probe() {
 	//    at least a factor of two with every response sent.
 	timeout := time.Second
 	for i := 0; i < multicastRepetitions; i++ {
-		for _, intf := range s.ifaces {
+		for _, intf := range s.interfaces {
 			resp := new(dns.Msg)
 			resp.MsgHdr.Response = true
 			// TODO: make response authoritative if we are the publisher
@@ -617,7 +642,7 @@ func (s *Server) probe() {
 			resp.Answer = []dns.RR{}
 			resp.Extra = []dns.RR{}
 			s.composeLookupAnswers(resp, s.ttl, intf.Index, true)
-			if err := s.multicastResponse(resp, intf.Index); err != nil {
+			if err := s.multicastResponse(resp, intf.Index, NetInterfaceStateFlagMulticastJoined); err != nil {
 				log.Println("[ERR] zeroconf: failed to send announcement:", err.Error())
 			}
 		}
@@ -656,7 +681,9 @@ func (s *Server) unregister() error {
 	resp.Answer = []dns.RR{}
 	resp.Extra = []dns.RR{}
 	s.composeLookupAnswers(resp, 0, 0, true)
-	return s.multicastResponse(resp, 0)
+	// cleanup ifaces we have NEVER written successfully. No need to unregister them
+
+	return s.multicastResponse(resp, 0, NetInterfaceStateFlagMulticastJoined, NetInterfaceStateFlagMessageSent)
 }
 
 func (s *Server) appendAddrs(list []dns.RR, ttl uint32, ifIndex int, flushCache bool) []dns.RR {
@@ -737,29 +764,35 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 		return err
 	}
 	addr := from.(*net.UDPAddr)
-	if addr.IP.To4() != nil {
+	if addr.IP.To4() != nil && s.ipv4conn != nil {
 		if ifIndex != 0 {
 			var wcm ipv4.ControlMessage
 			wcm.IfIndex = ifIndex
+			setDeadline(s.writeTimeout, s.ipv4conn)
 			_, err = s.ipv4conn.WriteTo(buf, &wcm, addr)
 		} else {
+			setDeadline(s.writeTimeout, s.ipv4conn)
 			_, err = s.ipv4conn.WriteTo(buf, nil, addr)
 		}
 		return err
-	} else {
+	} else if s.ipv6conn != nil {
 		if ifIndex != 0 {
 			var wcm ipv6.ControlMessage
 			wcm.IfIndex = ifIndex
+			setDeadline(s.writeTimeout, s.ipv6conn)
 			_, err = s.ipv6conn.WriteTo(buf, &wcm, addr)
 		} else {
+			setDeadline(s.writeTimeout, s.ipv6conn)
 			_, err = s.ipv6conn.WriteTo(buf, nil, addr)
 		}
 		return err
+	} else {
+		return fmt.Errorf("no suitable interface")
 	}
 }
 
 // multicastResponse is used to send a multicast response packet
-func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
+func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int, requiredFlags ...NetInterfaceStateFlag) error {
 	buf, err := msg.Pack()
 	if err != nil {
 		return fmt.Errorf("failed to pack msg %v: %w", msg, err)
@@ -770,27 +803,41 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv4.ControlMessage
 		if ifIndex != 0 {
-			switch runtime.GOOS {
-			case "darwin", "ios", "linux":
-				wcm.IfIndex = ifIndex
-			default:
-				iface, _ := net.InterfaceByIndex(ifIndex)
-				if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv4, requiredFlags...) {
+				switch runtime.GOOS {
+				case "darwin", "ios", "linux":
+					wcm.IfIndex = ifIndex
+				default:
+					iface, _ := net.InterfaceByIndex(ifIndex)
+					if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
+						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+					}
+				}
+				setDeadline(s.writeTimeout, s.ipv4conn)
+				n, err := s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+				if err == nil && n > 0 {
+					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
 				}
 			}
-			s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+
 		} else {
-			for _, intf := range s.ifaces {
+			for _, intf := range s.interfaces {
+				if !intf.HasFlags(NetInterfaceScopeIPv4, requiredFlags...) {
+					continue
+				}
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
 				default:
-					if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
+					if err := s.ipv4conn.SetMulticastInterface(&intf.Interface); err != nil {
 						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 					}
 				}
-				s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+				setDeadline(s.writeTimeout, s.ipv4conn)
+				n, err := s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+				if err == nil && n > 0 {
+					intf.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
+				}
 			}
 		}
 	}
@@ -801,27 +848,40 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv6.ControlMessage
 		if ifIndex != 0 {
-			switch runtime.GOOS {
-			case "darwin", "ios", "linux":
-				wcm.IfIndex = ifIndex
-			default:
-				iface, _ := net.InterfaceByIndex(ifIndex)
-				if err := s.ipv6conn.SetMulticastInterface(iface); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+			if v := s.interfaces.GetByIndex(ifIndex); v != nil && v.HasFlags(NetInterfaceScopeIPv6, requiredFlags...) {
+				switch runtime.GOOS {
+				case "darwin", "ios", "linux":
+					wcm.IfIndex = ifIndex
+				default:
+					iface, _ := net.InterfaceByIndex(ifIndex)
+					if err := s.ipv6conn.SetMulticastInterface(iface); err != nil {
+						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+					}
+				}
+				setDeadline(s.writeTimeout, s.ipv6conn)
+				n, err := s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+				if err == nil && n > 0 {
+					s.interfaces.GetByIndex(ifIndex).SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMessageSent)
 				}
 			}
-			s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
 		} else {
-			for _, intf := range s.ifaces {
+			for _, intf := range s.interfaces {
+				if !intf.HasFlags(NetInterfaceScopeIPv6, requiredFlags...) {
+					continue
+				}
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
 				default:
-					if err := s.ipv6conn.SetMulticastInterface(&intf); err != nil {
+					if err := s.ipv6conn.SetMulticastInterface(&intf.Interface); err != nil {
 						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 					}
 				}
-				s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+				setDeadline(s.writeTimeout, s.ipv6conn)
+				n, err := s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+				if err == nil && n > 0 {
+					intf.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMessageSent)
+				}
 			}
 		}
 	}

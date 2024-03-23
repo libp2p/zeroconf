@@ -28,18 +28,23 @@ const (
 	IPv4AndIPv6        = IPv4 | IPv6 // default option
 )
 
-var initialQueryInterval = 4 * time.Second
+var (
+	initialQueryInterval      = 4 * time.Second
+	defaultClientWriteTimeout = 10 * time.Second
+)
 
 // Client structure encapsulates both IPv4/IPv6 UDP connections.
 type client struct {
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	ipv4conn     *ipv4.PacketConn
+	ipv6conn     *ipv6.PacketConn
+	interfaces   NetInterfaceList
+	writeTimeout time.Duration
 }
 
 type clientOpts struct {
-	listenOn IPType
-	ifaces   []net.Interface
+	listenOn     IPType
+	ifaces       []net.Interface
+	writeTimeout time.Duration
 }
 
 // ClientOption fills the option struct to configure intefaces, etc.
@@ -60,6 +65,13 @@ func SelectIPTraffic(t IPType) ClientOption {
 func SelectIfaces(ifaces []net.Interface) ClientOption {
 	return func(o *clientOpts) {
 		o.ifaces = ifaces
+	}
+}
+
+// ClientWriteTimeout sets timeout for writing to the socket
+func ClientWriteTimeout(duration time.Duration) ClientOption {
+	return func(o *clientOpts) {
+		o.writeTimeout = duration
 	}
 }
 
@@ -100,7 +112,8 @@ func Lookup(ctx context.Context, instance, service, domain string, entries chan<
 func applyOpts(options ...ClientOption) clientOpts {
 	// Apply default configuration and load supplied options.
 	var conf = clientOpts{
-		listenOn: IPv4AndIPv6,
+		listenOn:     IPv4AndIPv6,
+		writeTimeout: defaultClientWriteTimeout,
 	}
 	for _, o := range options {
 		if o != nil {
@@ -137,11 +150,12 @@ func newClient(opts clientOpts) (*client, error) {
 	if len(ifaces) == 0 {
 		ifaces = listMulticastInterfaces()
 	}
+	ifaceList := NewInterfaceList(ifaces)
 	// IPv4 interfaces
 	var ipv4conn *ipv4.PacketConn
 	if (opts.listenOn & IPv4) > 0 {
 		var err error
-		ipv4conn, err = joinUdp4Multicast(ifaces)
+		ipv4conn, err = joinUdp4Multicast(ifaceList)
 		if err != nil {
 			return nil, err
 		}
@@ -150,16 +164,17 @@ func newClient(opts clientOpts) (*client, error) {
 	var ipv6conn *ipv6.PacketConn
 	if (opts.listenOn & IPv6) > 0 {
 		var err error
-		ipv6conn, err = joinUdp6Multicast(ifaces)
+		ipv6conn, err = joinUdp6Multicast(ifaceList)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	return &client{
-		ipv4conn: ipv4conn,
-		ipv6conn: ipv6conn,
-		ifaces:   ifaces,
+		ipv4conn:     ipv4conn,
+		ipv6conn:     ipv6conn,
+		interfaces:   ifaceList,
+		writeTimeout: opts.writeTimeout,
 	}, nil
 }
 
@@ -428,30 +443,38 @@ func (c *client) query(params *lookupParams) error {
 		m.SetQuestion(serviceName, dns.TypePTR)
 	}
 	m.RecursionDesired = false
-	return c.sendQuery(m)
+	// only send multicast queries to interfaces that we have joined
+	return c.sendQuery(m, NetInterfaceStateFlagMulticastJoined)
 }
 
 // Pack the dns.Msg and write to available connections (multicast)
-func (c *client) sendQuery(msg *dns.Msg) error {
+func (c *client) sendQuery(msg *dns.Msg, requiredFlags ...NetInterfaceStateFlag) error {
 	buf, err := msg.Pack()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to pack msg %v: %w", msg, err)
 	}
 	if c.ipv4conn != nil {
 		// See https://pkg.go.dev/golang.org/x/net/ipv4#pkg-note-BUG
 		// As of Golang 1.18.4
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv4.ControlMessage
-		for ifi := range c.ifaces {
+		for _, intf := range c.interfaces {
+			if !intf.HasFlags(NetInterfaceScopeIPv4, requiredFlags...) {
+				continue
+			}
 			switch runtime.GOOS {
 			case "darwin", "ios", "linux":
-				wcm.IfIndex = c.ifaces[ifi].Index
+				wcm.IfIndex = intf.Index
 			default:
-				if err := c.ipv4conn.SetMulticastInterface(&c.ifaces[ifi]); err != nil {
+				if err := c.ipv4conn.SetMulticastInterface(&intf.Interface); err != nil {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			c.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			setDeadline(c.writeTimeout, c.ipv4conn)
+			n, err := c.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			if err == nil && n > 0 {
+				intf.SetFlag(NetInterfaceScopeIPv4, NetInterfaceStateFlagMessageSent)
+			}
 		}
 	}
 	if c.ipv6conn != nil {
@@ -459,16 +482,23 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 		// As of Golang 1.18.4
 		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
 		var wcm ipv6.ControlMessage
-		for ifi := range c.ifaces {
+		for _, intf := range c.interfaces {
+			if !intf.HasFlags(NetInterfaceScopeIPv6, requiredFlags...) {
+				continue
+			}
 			switch runtime.GOOS {
 			case "darwin", "ios", "linux":
-				wcm.IfIndex = c.ifaces[ifi].Index
+				wcm.IfIndex = intf.Index
 			default:
-				if err := c.ipv6conn.SetMulticastInterface(&c.ifaces[ifi]); err != nil {
+				if err := c.ipv6conn.SetMulticastInterface(&intf.Interface); err != nil {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			c.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+			setDeadline(c.writeTimeout, c.ipv6conn)
+			n, err := c.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+			if err == nil && n > 0 {
+				intf.SetFlag(NetInterfaceScopeIPv6, NetInterfaceStateFlagMessageSent)
+			}
 		}
 	}
 	return nil
