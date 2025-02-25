@@ -773,6 +773,15 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 			switch runtime.GOOS {
 			case "darwin", "ios", "linux":
 				wcm.IfIndex = ifIndex
+			case "windows":
+				iface, _ := net.InterfaceByIndex(ifIndex)
+				if iface.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
+					log.Println("Skipping Teredo interface on windows")
+				} else {
+					if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
+						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+					}
+				}
 			default:
 				iface, _ := net.InterfaceByIndex(ifIndex)
 				if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
@@ -785,6 +794,15 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
+				case "windows":
+					iface, _ := net.InterfaceByIndex(ifIndex)
+					if iface.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
+						log.Println("Skipping Teredo interface on windows")
+					} else {
+						if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
+							log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+						}
+					}
 				default:
 					if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
 						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
