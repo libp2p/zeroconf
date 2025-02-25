@@ -775,17 +775,17 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 				wcm.IfIndex = ifIndex
 			case "windows":
 				iface, _ := net.InterfaceByIndex(ifIndex)
-				if iface.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
+				if iface.Name == "Teredo Tunneling Pseudo-Interface" {
 					log.Println("Skipping Teredo interface on windows")
 				} else {
 					if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
-						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+						log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", iface.Name, err)
 					}
 				}
 			default:
 				iface, _ := net.InterfaceByIndex(ifIndex)
 				if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+					log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", iface.Name, err)
 				}
 			}
 			s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
@@ -795,16 +795,16 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
 				case "windows":
-					if intf.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
+					if intf.Name == "Teredo Tunneling Pseudo-Interface" {
 						log.Println("Skipping Teredo interface on windows")
 					} else {
 						if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
-							log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+							log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", intf.Name, err)
 						}
 					}
 				default:
 					if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
-						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+						log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", intf.Name, err)
 					}
 				}
 				s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
@@ -821,10 +821,19 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 			switch runtime.GOOS {
 			case "darwin", "ios", "linux":
 				wcm.IfIndex = ifIndex
+			case "windows":
+				iface, _ := net.InterfaceByIndex(ifIndex)
+				if iface.Name == "Teredo Tunneling Pseudo-Interface" {
+					log.Println("Skipping Teredo interface on windows")
+				} else {
+					if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
+						log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", iface.Name, err)
+					}
+				}
 			default:
 				iface, _ := net.InterfaceByIndex(ifIndex)
 				if err := s.ipv6conn.SetMulticastInterface(iface); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+					log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", iface.Name, err)
 				}
 			}
 			s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
@@ -833,9 +842,17 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 				switch runtime.GOOS {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
+				case "windows":
+					if intf.Name == "Teredo Tunneling Pseudo-Interface" {
+						log.Println("Skipping Teredo interface on windows")
+					} else {
+						if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
+							log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", intf.Name, err)
+						}
+					}
 				default:
 					if err := s.ipv6conn.SetMulticastInterface(&intf); err != nil {
-						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+						log.Printf("[WARN] mdns: Failed to set multicast interface %s: %v", intf.Name, err)
 					}
 				}
 				s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
