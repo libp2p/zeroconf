@@ -795,11 +795,10 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 				case "darwin", "ios", "linux":
 					wcm.IfIndex = intf.Index
 				case "windows":
-					iface, _ := net.InterfaceByIndex(ifIndex)
-					if iface.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
+					if intf.HardwareAddr.String() == "00:00:00:00:00:00:00:E0" {
 						log.Println("Skipping Teredo interface on windows")
 					} else {
-						if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
+						if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
 							log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 						}
 					}
