@@ -277,6 +277,7 @@ func (c *client) mainloop(ctx context.Context, params *lookupParams) {
 					continue
 				}
 				if _, ok := sentEntries[k]; ok {
+					sentEntries[k].Expiry = e.Expiry
 					continue
 				}
 
