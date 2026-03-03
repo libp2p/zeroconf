@@ -169,10 +169,11 @@ const (
 
 // Server structure encapsulates both IPv4/IPv6 UDP connections
 type Server struct {
-	service  *ServiceEntry
-	ipv4conn *ipv4.PacketConn
-	ipv6conn *ipv6.PacketConn
-	ifaces   []net.Interface
+	service    *ServiceEntry
+	ipv4conn   *ipv4.PacketConn
+	ipv6conn   *ipv6.PacketConn
+	ifaces     []net.Interface
+	aggregator *responseAggregator // RFC6762 6.4 Response Aggregation
 
 	shouldShutdown chan struct{}
 	shutdownLock   sync.Mutex
@@ -203,6 +204,7 @@ func newServer(ifaces []net.Interface, opts serverOpts) (*Server, error) {
 		ttl:            opts.ttl,
 		shouldShutdown: make(chan struct{}),
 	}
+	s.aggregator = newResponseAggregator(s)
 
 	return s, nil
 }
@@ -240,6 +242,9 @@ func (s *Server) Shutdown() {
 	if s.isShutdown {
 		return
 	}
+
+	// Cancel any pending aggregated responses before closing connections.
+	s.aggregator.shutdown()
 
 	if err := s.unregister(); err != nil {
 		log.Printf("failed to unregister: %s", err)
@@ -326,37 +331,58 @@ func (s *Server) handleQuery(query *dns.Msg, ifIndex int, from net.Addr) error {
 		return nil
 	}
 
-	// Handle each question
+	// RFC6762 6.4: Aggregate all multicast responses for this query into a
+	// single message. This reduces network traffic when many nodes are present.
+	multicastResp := dns.Msg{}
+	multicastResp.SetReply(query)
+	multicastResp.Compress = true
+	multicastResp.RecursionDesired = false
+	multicastResp.Authoritative = true
+	multicastResp.Question = nil // RFC6762 section 6: responses MUST NOT contain any questions
+	multicastResp.Answer = []dns.RR{}
+	multicastResp.Extra = []dns.RR{}
+
 	var err error
 	for _, q := range query.Question {
-		resp := dns.Msg{}
-		resp.SetReply(query)
-		resp.Compress = true
-		resp.RecursionDesired = false
-		resp.Authoritative = true
-		resp.Question = nil // RFC6762 section 6 "responses MUST NOT contain any questions"
-		resp.Answer = []dns.RR{}
-		resp.Extra = []dns.RR{}
-		if err = s.handleQuestion(q, &resp, query, ifIndex); err != nil {
-			// log.Printf("[ERR] zeroconf: failed to handle question %v: %v", q, err)
+		// Use a per-question scratch buffer so that isKnownAnswer's
+		// "resp.Answer = nil" cannot clobber answers already accumulated
+		// from previous questions into multicastResp.
+		perQ := dns.Msg{}
+		perQ.Answer = []dns.RR{}
+		perQ.Extra = []dns.RR{}
+		if e := s.handleQuestion(q, &perQ, query, ifIndex); e != nil {
+			// log.Printf("[ERR] zeroconf: failed to handle question %v: %v", q, e)
+			err = e
 			continue
 		}
-		// Check if there is an answer
-		if len(resp.Answer) == 0 {
+		if len(perQ.Answer) == 0 {
 			continue
 		}
 
 		if isUnicastQuestion(q) {
-			// Send unicast
-			if e := s.unicastResponse(&resp, ifIndex, from); e != nil {
+			// Unicast responses are sent immediately without aggregation.
+			unicastResp := dns.Msg{}
+			unicastResp.SetReply(query)
+			unicastResp.Compress = true
+			unicastResp.RecursionDesired = false
+			unicastResp.Authoritative = true
+			unicastResp.Question = nil // RFC6762 section 6 "responses MUST NOT contain any questions"
+			unicastResp.Answer = perQ.Answer
+			unicastResp.Extra = perQ.Extra
+			if e := s.unicastResponse(&unicastResp, ifIndex, from); e != nil {
 				err = e
 			}
 		} else {
-			// Send mulicast
-			if e := s.multicastResponse(&resp, ifIndex); e != nil {
-				err = e
-			}
+			// Merge answers into the aggregated multicast response.
+			mergeMsg(&multicastResp, &perQ)
 		}
+	}
+
+	// Schedule the aggregated multicast response.
+	// RFC6762 Section 6.4: the aggregator will delay delivery by 20-120ms
+	// and merge with other pending responses for the same interface.
+	if len(multicastResp.Answer) > 0 {
+		s.aggregator.schedule(&multicastResp, ifIndex)
 	}
 
 	return err
