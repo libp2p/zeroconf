@@ -68,21 +68,51 @@ func (a *responseAggregator) schedule(msg *dns.Msg, ifIndex int) {
 	if existing, ok := a.pending[ifIndex]; ok {
 		mergeMsg(existing.msg, msg)
 
-		// RFC6762 Section 6.4: aggregate as long as we are within the 500ms window.
-		if time.Since(existing.firstSeen) < responseMaxAggregationDelay {
+		// If the first-seen time has already exceeded the max aggregation delay,
+		// flush immediately (same behavior as before).
+		elapsed := time.Since(existing.firstSeen)
+		if elapsed >= responseMaxAggregationDelay {
+			// Max aggregation delay exceeded: flush the existing response now
+			existing.timer.Stop()
+			delete(a.pending, ifIndex)
 			a.mu.Unlock()
+			if len(existing.msg.Answer) > 0 {
+				if err := a.server.multicastResponse(existing.msg, existing.ifIndex); err != nil {
+					log.Printf("[ERR] zeroconf: failed to send aggregated response: %v", err)
+				}
+			}
 			return
 		}
 
-		// Max aggregation delay exceeded: flush the existing response now
-		existing.timer.Stop()
-		delete(a.pending, ifIndex)
-		a.mu.Unlock()
-		if len(existing.msg.Answer) > 0 {
-			if err := a.server.multicastResponse(existing.msg, existing.ifIndex); err != nil {
-				log.Printf("[ERR] zeroconf: failed to send aggregated response: %v", err)
-			}
+		// Otherwise, reschedule delivery from *now* by a random delay of 20-120ms.
+		// However, do not delay beyond the remaining aggregation window.
+		delay := responseMinDelay + time.Duration(rand.Int63n(int64(responseMaxDelay-responseMinDelay)))
+		remaining := responseMaxAggregationDelay - elapsed
+		if delay > remaining {
+			delay = remaining
 		}
+
+		// Stop the previous timer (best-effort) and replace it with a new one.
+		existing.timer.Stop()
+		existing.timer = time.AfterFunc(delay, func() {
+			a.mu.Lock()
+			cur, ok := a.pending[ifIndex]
+			if !ok || cur != existing {
+				// Already flushed or superseded.
+				a.mu.Unlock()
+				return
+			}
+			delete(a.pending, ifIndex)
+			a.mu.Unlock()
+
+			if len(existing.msg.Answer) > 0 {
+				if err := a.server.multicastResponse(existing.msg, existing.ifIndex); err != nil {
+					log.Printf("[ERR] zeroconf: failed to send aggregated response: %v", err)
+				}
+			}
+		})
+
+		a.mu.Unlock()
 		return
 	}
 
