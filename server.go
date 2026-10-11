@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -179,6 +180,10 @@ type Server struct {
 	refCount       sync.WaitGroup
 	isShutdown     bool
 	ttl            uint32
+
+	probing     atomic.Bool // service instance name not claimed yet
+	probeState  atomic.Pointer[probeState]
+	probeResult chan probeResult
 }
 
 // Constructs server structure
@@ -202,12 +207,16 @@ func newServer(ifaces []net.Interface, opts serverOpts) (*Server, error) {
 		ifaces:         ifaces,
 		ttl:            opts.ttl,
 		shouldShutdown: make(chan struct{}),
+		probeResult:    make(chan probeResult, 1),
 	}
 
 	return s, nil
 }
 
 func (s *Server) start() {
+	// don't answer queries before the name is claimed
+	s.probing.Store(true)
+
 	if s.ipv4conn != nil {
 		s.refCount.Add(1)
 		go s.recv4(s.ipv4conn)
@@ -316,17 +325,17 @@ func (s *Server) parsePacket(packet []byte, ifIndex int, from net.Addr) error {
 		// log.Printf("[ERR] zeroconf: Failed to unpack packet: %v", err)
 		return err
 	}
+	if s.probing.Load() {
+		s.handleProbeMessage(&msg)
+		return nil
+	}
 	return s.handleQuery(&msg, ifIndex, from)
 }
 
 // handleQuery is used to handle an incoming query
 func (s *Server) handleQuery(query *dns.Msg, ifIndex int, from net.Addr) error {
-	// Ignore questions with authoritative section for now
-	if len(query.Ns) > 0 {
-		return nil
-	}
-
-	// Handle each question
+	// Handle each question, including probes from other hosts so they can
+	// detect a conflict with our records (RFC 6762 section 8.1)
 	var err error
 	for _, q := range query.Question {
 		resp := dns.Msg{}
@@ -549,36 +558,8 @@ func (s *Server) serviceTypeName(resp *dns.Msg, ttl uint32) {
 }
 
 // Perform probing & announcement
-// TODO: implement a proper probing & conflict resolution
 func (s *Server) probe() {
 	defer s.refCount.Done()
-
-	q := new(dns.Msg)
-	q.SetQuestion(s.service.ServiceInstanceName(), dns.TypePTR)
-	q.RecursionDesired = false
-
-	srv := &dns.SRV{
-		Hdr: dns.RR_Header{
-			Name:   s.service.ServiceInstanceName(),
-			Rrtype: dns.TypeSRV,
-			Class:  dns.ClassINET,
-			Ttl:    s.ttl,
-		},
-		Priority: 0,
-		Weight:   0,
-		Port:     uint16(s.service.Port),
-		Target:   s.service.HostName,
-	}
-	txt := &dns.TXT{
-		Hdr: dns.RR_Header{
-			Name:   s.service.ServiceInstanceName(),
-			Rrtype: dns.TypeTXT,
-			Class:  dns.ClassINET,
-			Ttl:    s.ttl,
-		},
-		Txt: s.service.Text,
-	}
-	q.Ns = []dns.RR{srv, txt}
 
 	// Wait for a random duration uniformly distributed between 0 and 250 ms
 	// before sending the first probe packet.
@@ -589,16 +570,9 @@ func (s *Server) probe() {
 	case <-s.shouldShutdown:
 		return
 	}
-	for i := 0; i < 3; i++ {
-		if err := s.multicastResponse(q, 0); err != nil {
-			log.Println("[ERR] zeroconf: failed to send probe:", err.Error())
-		}
-		timer.Reset(250 * time.Millisecond)
-		select {
-		case <-timer.C:
-		case <-s.shouldShutdown:
-			return
-		}
+
+	if !s.claimName(timer) {
+		return
 	}
 
 	// From RFC6762

@@ -53,7 +53,7 @@ func newServiceRecord(instance, service string, domain string) *ServiceRecord {
 
 	// Cache service instance name
 	if instance != "" {
-		s.serviceInstanceName = fmt.Sprintf("%s.%s", trimDot(s.Instance), s.ServiceName())
+		s.setInstance(instance)
 	}
 
 	// Cache service type name domain
@@ -64,6 +64,12 @@ func newServiceRecord(instance, service string, domain string) *ServiceRecord {
 	s.serviceTypeName = fmt.Sprintf("_services._dns-sd._udp.%s.", typeNameDomain)
 
 	return s
+}
+
+// setInstance sets the instance name and updates the cached service instance name.
+func (s *ServiceRecord) setInstance(instance string) {
+	s.Instance = instance
+	s.serviceInstanceName = fmt.Sprintf("%s.%s", trimDot(s.Instance), s.ServiceName())
 }
 
 // lookupParams contains configurable properties to create a service discovery request

@@ -89,6 +89,7 @@ See what needs to be done and submit a pull request :)
 * [x] Multiple IPv6 / IPv4 addresses support
 * [x] Send multiple probes (exp. back-off) if no service answers (*)
 * [x] Timestamp entries for TTL checks
+* [x] Probe service instance names and rename on conflict (RFC 6762 section 8)
 * [ ] Compare new multicasts with already received services
 
 _Notes:_
