@@ -102,14 +102,28 @@ func (l *lookupParams) disableProbing() {
 // ServiceEntry represents a browse/lookup result for client API.
 // It is also used to configure service registration (server API), which is
 // used to answer multicast queries.
+// SRVCandidate retains one SRV record and the addresses of its target.
+// Selection among candidates is the caller's responsibility (RFC 2782).
+type SRVCandidate struct {
+	HostName string   `json:"hostname"`
+	Port     int      `json:"port"`
+	Priority uint16   `json:"priority"`
+	Weight   uint16   `json:"weight"`
+	AddrIPv4 []net.IP `json:"-"`
+	AddrIPv6 []net.IP `json:"-"`
+}
+
 type ServiceEntry struct {
+	TXTRecords    [][]string     `json:"txtRecords,omitempty"` // Unicast TXT records, preserving record boundaries (RFC 6763 section 6.8).
+	SRVCandidates []SRVCandidate `json:"srvCandidates,omitempty"`
 	ServiceRecord
-	HostName string    `json:"hostname"` // Host machine DNS name
-	Port     int       `json:"port"`     // Service Port
-	Text     []string  `json:"text"`     // Service info served as a TXT record
-	Expiry   time.Time `json:"expiry"`   // Expiry of the service entry, will be converted to a TTL value
-	AddrIPv4 []net.IP  `json:"-"`        // Host machine IPv4 address
-	AddrIPv6 []net.IP  `json:"-"`        // Host machine IPv6 address
+	HostName string    `json:"hostname"`          // Host machine DNS name
+	Port     int       `json:"port"`              // Service Port
+	Text     []string  `json:"text"`              // Service info served as a TXT record
+	Expiry   time.Time `json:"expiry"`            // Expiry of the service entry, will be converted to a TTL value
+	AddrIPv4 []net.IP  `json:"-"`                 // Host machine IPv4 address
+	AddrIPv6 []net.IP  `json:"-"`                 // Host machine IPv6 address
+	Removed  bool      `json:"removed,omitempty"` // Explicit removal event, distinct from a TTL-zero answer.
 }
 
 // newServiceEntry constructs a ServiceEntry.

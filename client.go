@@ -38,8 +38,11 @@ type client struct {
 }
 
 type clientOpts struct {
-	listenOn IPType
-	ifaces   []net.Interface
+	listenOn        IPType
+	ifaces          []net.Interface
+	unannouncements bool
+	unicast         bool
+	resolvers       []string
 }
 
 // ClientOption fills the option struct to configure intefaces, etc.
@@ -63,10 +66,21 @@ func SelectIfaces(ifaces []net.Interface) ClientOption {
 	}
 }
 
+// Unannouncements emits an expired entry when a previously emitted service is removed.
+func Unannouncements() ClientOption {
+	return func(o *clientOpts) {
+		o.unannouncements = true
+	}
+}
+
 // Browse for all services of a given type in a given domain.
 // Received entries are sent on the entries channel.
 // It blocks until the context is canceled (or an error occurs).
 func Browse(ctx context.Context, service, domain string, entries chan<- *ServiceEntry, opts ...ClientOption) error {
+	conf := applyOpts(opts...)
+	if conf.unicast {
+		return runUnicast(ctx, "", service, domain, entries, true, conf)
+	}
 	cl, err := newClient(applyOpts(opts...))
 	if err != nil {
 		return err
@@ -84,6 +98,10 @@ func Browse(ctx context.Context, service, domain string, entries chan<- *Service
 // Received entries are sent on the entries channel.
 // It blocks until the context is canceled (or an error occurs).
 func Lookup(ctx context.Context, instance, service, domain string, entries chan<- *ServiceEntry, opts ...ClientOption) error {
+	conf := applyOpts(opts...)
+	if conf.unicast {
+		return runUnicast(ctx, instance, service, domain, entries, false, conf)
+	}
 	cl, err := newClient(applyOpts(opts...))
 	if err != nil {
 		return err

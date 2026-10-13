@@ -1,4 +1,4 @@
-ZeroConf: Service Discovery with mDNS
+ZeroConf: Service Discovery with DNS-SD
 =====================================
 ZeroConf is a pure Golang library that employs Multicast DNS-SD for
 
@@ -49,6 +49,10 @@ if err != nil {
 A subtype may added to service name to narrow the set of results. E.g. to browse `_workstation._tcp` with subtype `_windows`, use`_workstation._tcp,_windows`.
 
 See https://github.com/libp2p/zeroconf/blob/master/examples/resolv/client.go.
+
+## Unicast discovery in an explicit DNS domain
+
+Use the opt-in `UnicastDNS()` client option with Browse or Lookup. Existing calls remain multicast. See [unicast DNS-SD](UNICAST.md) for resolver configuration, SRV candidates, refresh, removal and cancellation, and the [executable example](examples/unicast/client.go).
 
 ## Lookup a specific service instance
 
