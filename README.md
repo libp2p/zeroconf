@@ -58,6 +58,20 @@ See https://github.com/libp2p/zeroconf/blob/master/examples/resolv/client.go.
 
 ## Register a service
 
+`Register` and `RegisterProxy` return after transport setup and start probing asynchronously.
+Call `server.WaitForReady(ctx)` to wait for the initial establishment result. Canceling
+that context only stops waiting; use `Shutdown` to stop the registration. The initial
+result stays unchanged after readiness. Later terminal failures close `server.Done()`;
+`server.Err()` returns their cause. A `*zeroconf.ConflictError` identifies the conflicting
+name and interface index. Registration does not rename automatically. Failure on a
+required interface stops the whole registration and withdraws its established records.
+
+When another responder shares the mDNS port, probing uses multicast replies and two
+additional probes at the same 250 ms spacing, adding 500 ms before readiness. Windows
+uses native packet information for per-interface registration. Its native execution
+has not been validated; source tests and cross-compilation do not establish runtime
+compatibility.
+
 ```go
 server, err := zeroconf.Register("GoZeroconf", "_workstation._tcp", "local.", 42424, []string{"txtv=0", "lo=1", "la=2"}, nil)
 if err != nil {

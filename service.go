@@ -3,6 +3,7 @@ package zeroconf
 import (
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -104,12 +105,13 @@ func (l *lookupParams) disableProbing() {
 // used to answer multicast queries.
 type ServiceEntry struct {
 	ServiceRecord
-	HostName string    `json:"hostname"` // Host machine DNS name
-	Port     int       `json:"port"`     // Service Port
-	Text     []string  `json:"text"`     // Service info served as a TXT record
-	Expiry   time.Time `json:"expiry"`   // Expiry of the service entry, will be converted to a TTL value
-	AddrIPv4 []net.IP  `json:"-"`        // Host machine IPv4 address
-	AddrIPv6 []net.IP  `json:"-"`        // Host machine IPv6 address
+	HostName string    `json:"hostname"`          // Host machine DNS name
+	Port     int       `json:"port"`              // Service Port
+	Text     []string  `json:"text"`              // Service info served as a TXT record
+	Expiry   time.Time `json:"expiry"`            // Expiry of the service entry, will be converted to a TTL value
+	AddrIPv4 []net.IP  `json:"-"`                 // Host machine IPv4 address
+	AddrIPv6 []net.IP  `json:"-"`                 // Host machine IPv6 address
+	Removed  bool      `json:"removed,omitempty"` // Explicit removal event, distinct from a TTL-zero answer.
 }
 
 // newServiceEntry constructs a ServiceEntry.
@@ -117,4 +119,44 @@ func newServiceEntry(instance, service string, domain string) *ServiceEntry {
 	return &ServiceEntry{
 		ServiceRecord: *newServiceRecord(instance, service, domain),
 	}
+}
+
+// cloneServiceEntry separates resolver-owned state from subscriber snapshots.
+func cloneServiceEntry(entry *ServiceEntry) *ServiceEntry {
+	if entry == nil {
+		return nil
+	}
+	cloned := *entry
+	cloned.Subtypes = cloneStrings(entry.Subtypes)
+	cloned.Text = cloneStrings(entry.Text)
+	cloned.AddrIPv4 = cloneIPs(entry.AddrIPv4)
+	cloned.AddrIPv6 = cloneIPs(entry.AddrIPv6)
+	return &cloned
+}
+
+func cloneStrings(input []string) []string {
+	if input == nil {
+		return nil
+	}
+	cloned := make([]string, len(input))
+	copy(cloned, input)
+	return cloned
+}
+
+func cloneIPs(input []net.IP) []net.IP {
+	if input == nil {
+		return nil
+	}
+	cloned := make([]net.IP, len(input))
+	for index, address := range input {
+		cloned[index] = append(net.IP(nil), address...)
+	}
+	return cloned
+}
+
+// sameService compares content while allowing quiet TTL renewal.
+func sameService(a, b *ServiceEntry) bool {
+	left, right := *a, *b
+	left.Expiry, right.Expiry = time.Time{}, time.Time{}
+	return reflect.DeepEqual(left, right)
 }
