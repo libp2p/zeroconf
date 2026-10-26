@@ -2,7 +2,10 @@ package zeroconf
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"runtime"
+	"sync"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -34,6 +37,32 @@ var (
 		Port: 5353,
 	}
 )
+
+// writeTo4 sends buf to the IPv4 mDNS group on the interface ifIndex names.
+// On Linux the interface is named in the packet's control message. Elsewhere
+// it is set on the socket instead: Windows does not implement control
+// messages (see https://pkg.go.dev/golang.org/x/net/ipv4#pkg-note-BUG), and
+// macOS refuses one naming an interface with no route to the group, as the
+// loopback interface has none ("sendmsg: network is unreachable"). mu
+// serialises setting the socket's interface and writing, so that concurrent
+// sends do not go out on each other's interface.
+func writeTo4(c *ipv4.PacketConn, mu *sync.Mutex, buf []byte, ifIndex int) {
+	if runtime.GOOS == "linux" {
+		_, _ = c.WriteTo(buf, &ipv4.ControlMessage{IfIndex: ifIndex}, ipv4Addr)
+		return
+	}
+	iface, err := net.InterfaceByIndex(ifIndex)
+	if err != nil {
+		log.Printf("[WARN] mdns: Failed to find interface %d: %v", ifIndex, err)
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if err := c.SetMulticastInterface(iface); err != nil {
+		log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
+	}
+	_, _ = c.WriteTo(buf, nil, ipv4Addr)
+}
 
 func joinUdp6Multicast(interfaces []net.Interface) (*ipv6.PacketConn, error) {
 	udpConn, err := net.ListenUDP("udp6", mdnsWildcardAddrIPv6)

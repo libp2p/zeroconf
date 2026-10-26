@@ -179,6 +179,8 @@ type Server struct {
 	refCount       sync.WaitGroup
 	isShutdown     bool
 	ttl            uint32
+
+	ipv4mu sync.Mutex // see writeTo4
 }
 
 // Constructs server structure
@@ -765,32 +767,11 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 		return fmt.Errorf("failed to pack msg %v: %w", msg, err)
 	}
 	if s.ipv4conn != nil {
-		// See https://pkg.go.dev/golang.org/x/net/ipv4#pkg-note-BUG
-		// As of Golang 1.18.4
-		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
-		var wcm ipv4.ControlMessage
 		if ifIndex != 0 {
-			switch runtime.GOOS {
-			case "darwin", "ios", "linux":
-				wcm.IfIndex = ifIndex
-			default:
-				iface, _ := net.InterfaceByIndex(ifIndex)
-				if err := s.ipv4conn.SetMulticastInterface(iface); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
-				}
-			}
-			s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			writeTo4(s.ipv4conn, &s.ipv4mu, buf, ifIndex)
 		} else {
 			for _, intf := range s.ifaces {
-				switch runtime.GOOS {
-				case "darwin", "ios", "linux":
-					wcm.IfIndex = intf.Index
-				default:
-					if err := s.ipv4conn.SetMulticastInterface(&intf); err != nil {
-						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
-					}
-				}
-				s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+				writeTo4(s.ipv4conn, &s.ipv4mu, buf, intf.Index)
 			}
 		}
 	}

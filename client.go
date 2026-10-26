@@ -8,6 +8,7 @@ import (
 	"net"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -35,6 +36,8 @@ type client struct {
 	ipv4conn *ipv4.PacketConn
 	ipv6conn *ipv6.PacketConn
 	ifaces   []net.Interface
+
+	ipv4mu sync.Mutex // see writeTo4
 }
 
 type clientOpts struct {
@@ -438,20 +441,8 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 		return err
 	}
 	if c.ipv4conn != nil {
-		// See https://pkg.go.dev/golang.org/x/net/ipv4#pkg-note-BUG
-		// As of Golang 1.18.4
-		// On Windows, the ControlMessage for ReadFrom and WriteTo methods of PacketConn is not implemented.
-		var wcm ipv4.ControlMessage
 		for ifi := range c.ifaces {
-			switch runtime.GOOS {
-			case "darwin", "ios", "linux":
-				wcm.IfIndex = c.ifaces[ifi].Index
-			default:
-				if err := c.ipv4conn.SetMulticastInterface(&c.ifaces[ifi]); err != nil {
-					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
-				}
-			}
-			c.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			writeTo4(c.ipv4conn, &c.ipv4mu, buf, c.ifaces[ifi].Index)
 		}
 	}
 	if c.ipv6conn != nil {
