@@ -409,6 +409,9 @@ func (s *Server) handleQuestion(q dns.Question, resp *dns.Msg, query *dns.Msg, i
 
 	case s.service.ServiceInstanceName():
 		s.composeLookupAnswers(resp, s.ttl, ifIndex, false)
+
+	case s.service.HostName:
+		s.composeHostAnswers(resp, q.Qtype, ifIndex)
 	default:
 		// handle matching subtype query
 		for _, subtype := range s.service.Subtypes {
@@ -424,6 +427,17 @@ func (s *Server) handleQuestion(q dns.Question, resp *dns.Msg, query *dns.Msg, i
 	}
 
 	return nil
+}
+
+// composeHostAnswers answers A/AAAA queries for the service's host name, so the
+// host (in particular a proxied one) can be resolved directly, not only through
+// the additional records of a browse or lookup.
+func (s *Server) composeHostAnswers(resp *dns.Msg, qtype uint16, ifIndex int) {
+	for _, rr := range s.appendAddrs(nil, s.ttl, ifIndex, false) {
+		if qtype == dns.TypeANY || rr.Header().Rrtype == qtype {
+			resp.Answer = append(resp.Answer, rr)
+		}
+	}
 }
 
 func (s *Server) composeBrowsingAnswers(resp *dns.Msg, ifIndex int) {
