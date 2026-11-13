@@ -741,18 +741,18 @@ func (s *Server) unicastResponse(resp *dns.Msg, ifIndex int, from net.Addr) erro
 		if ifIndex != 0 {
 			var wcm ipv4.ControlMessage
 			wcm.IfIndex = ifIndex
-			_, err = s.ipv4conn.WriteTo(buf, &wcm, addr)
+			_, err = writeTo4(s.ipv4conn, buf, &wcm, addr)
 		} else {
-			_, err = s.ipv4conn.WriteTo(buf, nil, addr)
+			_, err = writeTo4(s.ipv4conn, buf, nil, addr)
 		}
 		return err
 	} else {
 		if ifIndex != 0 {
 			var wcm ipv6.ControlMessage
 			wcm.IfIndex = ifIndex
-			_, err = s.ipv6conn.WriteTo(buf, &wcm, addr)
+			_, err = writeTo6(s.ipv6conn, buf, &wcm, addr)
 		} else {
-			_, err = s.ipv6conn.WriteTo(buf, nil, addr)
+			_, err = writeTo6(s.ipv6conn, buf, nil, addr)
 		}
 		return err
 	}
@@ -779,7 +779,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			writeTo4(s.ipv4conn, buf, &wcm, ipv4Addr)
 		} else {
 			for _, intf := range s.ifaces {
 				switch runtime.GOOS {
@@ -790,7 +790,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 					}
 				}
-				s.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+				writeTo4(s.ipv4conn, buf, &wcm, ipv4Addr)
 			}
 		}
 	}
@@ -810,7 +810,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+			writeTo6(s.ipv6conn, buf, &wcm, ipv6Addr)
 		} else {
 			for _, intf := range s.ifaces {
 				switch runtime.GOOS {
@@ -821,7 +821,7 @@ func (s *Server) multicastResponse(msg *dns.Msg, ifIndex int) error {
 						log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 					}
 				}
-				s.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+				writeTo6(s.ipv6conn, buf, &wcm, ipv6Addr)
 			}
 		}
 	}
