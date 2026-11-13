@@ -451,7 +451,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			c.ipv4conn.WriteTo(buf, &wcm, ipv4Addr)
+			writeTo4(c.ipv4conn, buf, &wcm, ipv4Addr)
 		}
 	}
 	if c.ipv6conn != nil {
@@ -468,7 +468,7 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 					log.Printf("[WARN] mdns: Failed to set multicast interface: %v", err)
 				}
 			}
-			c.ipv6conn.WriteTo(buf, &wcm, ipv6Addr)
+			writeTo6(c.ipv6conn, buf, &wcm, ipv6Addr)
 		}
 	}
 	return nil

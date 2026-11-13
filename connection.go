@@ -3,6 +3,7 @@ package zeroconf
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -116,4 +117,23 @@ func listMulticastInterfaces() []net.Interface {
 	}
 
 	return interfaces
+}
+
+// writeTimeout bounds a single write, a healthy interface completes it in microseconds
+const writeTimeout = 100 * time.Millisecond
+
+// writeTo4 sends with a deadline, a write can otherwise block forever and stall every later send and Shutdown
+func writeTo4(c *ipv4.PacketConn, b []byte, cm *ipv4.ControlMessage, dst net.Addr) (int, error) {
+	if err := c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return 0, err
+	}
+	return c.WriteTo(b, cm, dst)
+}
+
+// writeTo6 is the IPv6 counterpart of writeTo4
+func writeTo6(c *ipv6.PacketConn, b []byte, cm *ipv6.ControlMessage, dst net.Addr) (int, error) {
+	if err := c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return 0, err
+	}
+	return c.WriteTo(b, cm, dst)
 }
